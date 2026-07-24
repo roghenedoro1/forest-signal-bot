@@ -4,4 +4,4 @@ yfinance
 ta
 pytz
 requests
-flask
+Flask
