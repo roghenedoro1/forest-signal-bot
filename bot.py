@@ -9,7 +9,7 @@ import requests
 import threading
 import asyncio
 from flask import Flask
-from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ApplicationBuilder, CallbackQueryHandler, CommandHandler, ContextTypes
 
 LAGOS = pytz.timezone("Africa/Lagos")
@@ -40,7 +40,7 @@ def fetch_news():
         news_times = []
         for event in r:
             if event['impact'] == "High" and event['country'] in ["USD", "EUR", "GBP"]:
-                event_time = datetime.datetime.strptime(event['date'] + " " + event['time'], "%Y-%m-%d %H:%M:%S")
+                event_time = datetime.datetime.strptime(event['date'] + " + event['time'], "%Y-%m-%d %H:%M:%S")
                 event_time = pytz.utc.localize(event_time).astimezone(LAGOS)
                 news_times.append(event_time.strftime("%Y-%m-%d %H:%M"))
         data["news_cache"] = news_times
@@ -78,7 +78,7 @@ def get_signal_data(symbol):
         return {"price": price, "rsi": rsi, "signal": signal, "sl": sl, "tp": tp}
     except: return None
 
-async def send_signal_to_user(bot: Bot, user_id, name, s):
+async def send_signal_to_user(bot, user_id, name, s):
     signal_id = f"{name}_{user_id}_{int(time.time())}"
     keyboard = [[InlineKeyboardButton("✅ WIN", callback_data=f'win_{signal_id}'), InlineKeyboardButton("❌ LOSS", callback_data=f'loss_{signal_id}')]]
     msg = f"""🌲 <b>FOREST SNIPE SIGNAL</b> 🌲
@@ -122,7 +122,7 @@ async def winrate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = f"""📊 <b>YOUR STATS</b>\n<b>Total:</b> {total}\n<b>Wins:</b> {wins} ✅\n<b>Loss:</b> {loss} ❌\n<b>Winrate:</b> {rate}%"""
     await update.message.reply_text(msg, parse_mode="HTML")
 
-async def main_loop(app):
+async def main_loop(application):
     fetch_news()
     last_news_fetch = datetime.datetime.now()
     while True:
@@ -136,7 +136,7 @@ async def main_loop(app):
                     for name, symbol in PAIRS.items():
                         s = get_signal_data(symbol)
                         if s:
-                            for user_id in data["users"]: await send_signal_to_user(app.bot, user_id, name, s)
+                            for user_id in data["users"]: await send_signal_to_user(application.bot, user_id, name, s)
                     data["sent_signals"].append(time_key)
                     save_data()
         await asyncio.sleep(30)
@@ -147,11 +147,8 @@ async def main():
     application.add_handler(CommandHandler("winrate", winrate_command))
     application.add_handler(CallbackQueryHandler(button))
 
-    # Start Flask in background
     threading.Thread(target=run_flask, daemon=True).start()
-    # Start signal loop
     asyncio.create_task(main_loop(application))
-
     await application.run_polling()
 
 if __name__ == '__main__':
