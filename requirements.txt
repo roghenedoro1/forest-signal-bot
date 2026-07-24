@@ -1,7 +1,7 @@
-python-telegram-bot==13.15
+python-telegram-bot==20.7
+python-dontenv==1.0.1
 yfinance
 ta
 pytz
 requests
 flask
-imghdr==0.1
