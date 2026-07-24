@@ -4,3 +4,4 @@ ta
 pytz
 requests
 flask
+imghdr
