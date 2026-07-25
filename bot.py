@@ -40,8 +40,7 @@ def fetch_news():
         news_times = []
         for event in r:
             if event['impact'] == "High" and event['country'] in ["USD", "EUR", "GBP"]:
-                event_time = datetime.datetime.strptime(event['date'] + " + event['time'], "%Y-%m-%d %H:%M:%S")
-                event_time = pytz.utc.localize(event_time).astimezone(LAGOS)
+                event_time = datetime.datetime.strptime(event['date'] + " + event['time'], "%Y-%m-%d %H:%M:%S")                event_time = pytz.utc.localize(event_time).astimezone(LAGOS)
                 news_times.append(event_time.strftime("%Y-%m-%d %H:%M"))
         data["news_cache"] = news_times
         save_data()
