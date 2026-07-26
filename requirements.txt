@@ -1,5 +1,5 @@
-numpy>=1.26.4,<2.0.0
 python-telegram-bot[job-queue]==20.8
-yfinance==0.2.38
-pandas==2.0.3
+pandas==2.0.0
 ta==0.11.0
+requests>=2.31.0
+aiohttp>3.9.0
