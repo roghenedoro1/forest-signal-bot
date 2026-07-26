@@ -7,11 +7,10 @@ import json
 import os
 import requests
 import threading
-import asyncio
 import logging
 from flask import Flask
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import ApplicationBuilder, CallbackQueryHandler, CommandHandler, ContextTypes
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, CallbackContext
 
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -50,7 +49,7 @@ def fetch_news():
         news_times = []
         for event in r:
             if event.get('impact') == "High" and event.get('country') in ["USD", "EUR", "GBP"]:
-                dt_str = event['date'] + " " + event['time'] # <-- THIS IS THE CORRECT LINE
+                dt_str = event['date'] + " " + event['time']
                 event_time = datetime.datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S")
                 event_time = pytz.utc.localize(event_time).astimezone(LAGOS)
                 news_times.append(event_time.strftime("%Y-%m-%d %H:%M"))
@@ -96,9 +95,12 @@ def get_signal_data(symbol):
         logger.error(f"Signal error for {symbol}: {e}")
         return None
 
-async def send_signal_to_user(bot, user_id, name, s):
+def send_signal_to_user(bot, user_id, name, s):
     signal_id = f"{name}_{user_id}_{int(time.time())}"
-    keyboard = [[InlineKeyboardButton("✅ WIN", callback_data=f'win_{signal_id}'), InlineKeyboardButton("❌ LOSS", callback_data=f'loss_{signal_id}')]]
+    keyboard = [[
+        InlineKeyboardButton("✅ WIN", callback_data=f'win_{signal_id}'),
+        InlineKeyboardButton("❌ LOSS", callback_data=f'loss_{signal_id}')
+    ]]
     msg = f"""🌲 <b>FOREST SNIPE SIGNAL</b> 🌲
 <b>Pair:</b> {name}
 <b>Signal:</b> {'🟢 BUY' if s['signal']=='BUY' else '🔴 SELL'}
@@ -107,12 +109,15 @@ async def send_signal_to_user(bot, user_id, name, s):
 <b>TP:</b> {s['tp']:.5f} | <b>RR:</b> 1:2
 <b>RSI:</b> {s['rsi']:.2f}
 <b>Time:</b> {datetime.datetime.now(LAGOS).strftime('%H:%M WAT')}"""
-    try: await bot.send_message(chat_id=user_id, text=msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
-    except Exception as e: logger.error(f"Failed to send to {user_id}: {e}")
+    try:
+        bot.send_message(chat_id=user_id, text=msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
+        logger.info(f"Signal sent to {user_id} for {name}")
+    except Exception as e:
+        logger.error(f"Failed to send to {user_id}: {e}")
 
-async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def button(update, context: CallbackContext):
     q = update.callback_query
-    await q.answer()
+    q.answer()
     user_id = str(q.from_user.id)
     action = q.data.split('_')[0]
     data["wins"].setdefault(user_id, 0)
@@ -122,54 +127,66 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_data()
     total = data["wins"][user_id] + data["loss"][user_id]
     rate = round(data["wins"][user_id]/total*100, 1) if total > 0 else 0
-    await q.edit_message_text(text=q.message.text + f"\n\n<b>Recorded!</b>\n📊 Your Winrate: {rate}% | W:{data['wins'][user_id]} L:{data['loss'][user_id]}", parse_mode="HTML")
+    q.edit_message_text(text=q.message.text + f"\n\n<b>Recorded!</b>\n📊 Your Winrate: {rate}% | W:{data['wins'][user_id]} L:{data['loss'][user_id]}", parse_mode="HTML")
 
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def start_command(update, context: CallbackContext):
     user_id = str(update.message.chat_id)
     if user_id not in data["users"]:
         data["users"].append(user_id)
         save_data()
-    await update.message.reply_text("🌲 <b>Welcome to Forest Snipe Bot</b>\n\nYou will receive high probability signals here.\nUse /winrate to check your stats.", parse_mode="HTML")
+    update.message.reply_text("🌲 <b>Welcome to Forest Snipe Bot</b>\n\nYou will receive high probability signals here.\nUse /winrate to check your stats.", parse_mode="HTML")
 
-async def winrate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def winrate_command(update, context: CallbackContext):
     user_id = str(update.message.chat_id)
     wins, loss = data["wins"].get(user_id, 0), data["loss"].get(user_id, 0)
     total = wins + loss
     rate = round(wins/total*100, 1) if total > 0 else 0
     msg = f"""📊 <b>YOUR STATS</b>\n<b>Total Trades:</b> {total}\n<b>Wins:</b> {wins} ✅\n<b>Loss:</b> {loss} ❌\n<b>Winrate:</b> {rate}%"""
-    await update.message.reply_text(msg, parse_mode="HTML")
+    update.message.reply_text(msg, parse_mode="HTML")
 
-async def main_loop(application):
+def main_loop(bot):
     fetch_news()
     last_news_fetch = datetime.datetime.now()
     logger.info("Forest Bot started successfully")
     while True:
         now = datetime.datetime.now(LAGOS)
-        if (now - last_news_fetch).total_seconds() > 21600: fetch_news(); last_news_fetch = now
+        if (now - last_news_fetch).total_seconds() > 21600:
+            fetch_news()
+            last_news_fetch = now
         market_open = now.weekday() < 5 and 8 <= now.hour < 22
         if market_open and not is_news_time():
             if now.minute % 5 == 3:
                 time_key = now.strftime("%Y%m%d_%H:%M")
                 if time_key not in data["sent_signals"]:
+                    logger.info(f"Scanning markets at {now.strftime('%H:%M')}")
                     for name, symbol in PAIRS.items():
                         s = get_signal_data(symbol)
                         if s:
-                            for user_id in data["users"]: await send_signal_to_user(application.bot, user_id, name, s)
+                            for user_id in data["users"]:
+                                send_signal_to_user(bot, user_id, name, s)
                     data["sent_signals"].append(time_key)
                     if len(data["sent_signals"]) > 100: data["sent_signals"] = data["sent_signals"][-100:]
                     save_data()
-        await asyncio.sleep(30)
+        time.sleep(30)
 
-async def main():
-    if not BOT_TOKEN: logger.critical("BOT_TOKEN not set. Exiting."); return
-    application = ApplicationBuilder().token(BOT_TOKEN).build()
-    application.add_handler(CommandHandler("start", start_command))
-    application.add_handler(CommandHandler("winrate", winrate_command))
-    application.add_handler(CallbackQueryHandler(button))
+def main():
+    if not BOT_TOKEN:
+        logger.critical("BOT_TOKEN not set. Exiting.")
+        return
+
+    updater = Updater(BOT_TOKEN, use_context=True)
+    dp = updater.dispatcher
+
+    dp.add_handler(CommandHandler("start", start_command))
+    dp.add_handler(CommandHandler("winrate", winrate_command))
+    dp.add_handler(CallbackQueryHandler(button))
+
     threading.Thread(target=run_flask, daemon=True).start()
-    application.task = asyncio.create_task(main_loop(application))
+    threading.Thread(target=main_loop, args=(updater.bot,), daemon=True).start()
+
     logger.info("Starting polling...")
-    await application.run_polling(allowed_updates=Update.ALL_TYPES)
+    updater.start_polling()
+    updater.idle()
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    main()
