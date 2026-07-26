@@ -1,10 +1,12 @@
-import telegram
-print(f"TELEGRAM VERSION: {telegram.__version__}")import os
+import os
 import logging
+import telegram
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 logging.basicConfig(level=logging.INFO)
+
+print(f"TELEGRAM VERSION: {telegram.__version__}")
 
 TOKEN = os.getenv("BOT_TOKEN")
 
