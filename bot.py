@@ -1,4 +1,5 @@
-import os
+import telegram
+print(f"TELEGRAM VERSION: {telegram.__version__}")import os
 import logging
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
