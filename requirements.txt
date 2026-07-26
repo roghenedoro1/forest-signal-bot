@@ -3,4 +3,4 @@ yfinance==0.2.37
 ta==0.11.0
 pytz
 requests
-Flask
+imghdr==0.9.0
