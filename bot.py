@@ -6,9 +6,12 @@ import yfinance as yf
 import pandas as pd
 import ta
 import requests
+import json  # FIXED: Added to ensure win-rate data persistence
 from datetime import datetime, timedelta, time as datetime_time
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, Application
+from http.server import BaseHTTPRequestHandler, HTTPServer
+import threading
 
 # Configure structured production logs
 logging.basicConfig(
@@ -17,6 +20,7 @@ logging.basicConfig(
 
 TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
+DB_FILE = "trade_database.json"  # Local file destination for database persistence
 
 MAJOR_PAIRS = {
     "EURUSD": "EURUSD=X",
@@ -26,9 +30,26 @@ MAJOR_PAIRS = {
     "AUDUSD": "AUDUSD=X"
 }
 
-# --- GLOBAL WIN-RATE TRACKER ---
-# Structure: {"EURUSD": {"wins": 0, "losses": 0, "history": [{"entry": X, "direction": "BUY", "status": "PENDING"}]}}
-trade_database = {pair: {"wins": 0, "losses": 0, "active_trades": []} for pair in MAJOR_PAIRS}
+# --- FIXED: DATABASE LOAD/SAVE MANAGEMENT ---
+def load_database():
+    if os.path.exists(DB_FILE):
+        try:
+            with open(DB_FILE, "r") as f:
+                return json.load(f)
+        except Exception as e:
+            logging.error(f"Error reading database file: {str(e)}")
+    
+    # Return default empty schema if file doesn't exist or is corrupted
+    return {pair: {"wins": 0, "losses": 0, "active_trades": []} for pair in MAJOR_PAIRS}
+
+def save_database():
+    try:
+        with open(DB_FILE, "w") as f:
+            json.dump(trade_database, f, indent=4)
+    except Exception as e:
+        logging.error(f"Failed to write state tracking modifications to JSON storage: {str(e)}")
+
+trade_database = load_database()
 
 custom_session = requests.Session()
 custom_session.headers.update({
@@ -36,22 +57,20 @@ custom_session.headers.update({
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
 })
 
-# --- DYNAMIC MARKET TIME CALCULATOR (WAT TIME ZONE) ---
 def get_market_status_wat():
     """Calculates exactly how much time is left until the market opens or closes in WAT (UTC+1)"""
-    now = datetime.utcnow() + timedelta(hours=1) # Target local West Africa Time
-    weekday = now.weekday() # 0=Monday, 4=Friday, 5=Saturday, 6=Sunday
+    now = datetime.utcnow() + timedelta(hours=1)
+    weekday = now.weekday()
     now_time = now.time()
 
-    market_open_wat = datetime_time(22, 0)  # Sunday 10:00 PM WAT
-    market_close_wat = datetime_time(22, 0) # Friday 10:00 PM WAT
+    market_open_wat = datetime_time(22, 0)  
+    market_close_wat = datetime_time(22, 0) 
 
-    if weekday == 5: # Saturday: Markets completely closed
+    if weekday == 5:
         target = datetime.combine(now.date() + timedelta(days=1), market_open_wat)
         diff = target - now
         return f"🔴 Closed (Opens in {diff.seconds // 3600}h {(diff.seconds % 3600) // 60}m)"
-        
-    elif weekday == 6: # Sunday
+    elif weekday == 6:
         if now_time < market_open_wat:
             target = datetime.combine(now.date(), market_open_wat)
             diff = target - now
@@ -60,8 +79,7 @@ def get_market_status_wat():
             target = datetime.combine(now.date() + timedelta(days=5 - weekday), market_close_wat)
             diff = target - now
             return f"🟢 Open (Closes in {diff.days}d {diff.seconds // 3600}h)"
-            
-    elif weekday == 4: # Friday
+    elif weekday == 4:
         if now_time >= market_close_wat:
             target = datetime.combine(now.date() + timedelta(days=2), market_open_wat)
             diff = target - now
@@ -70,9 +88,7 @@ def get_market_status_wat():
             target = datetime.combine(now.date(), market_close_wat)
             diff = target - now
             return f"🟢 Open (Closes in {diff.seconds // 3600}h {(diff.seconds % 3600) // 60}m)"
-            
-    else: # Monday through Thursday: Open
-        # Find time left until Friday night market close
+    else:
         days_until_friday = (4 - weekday)
         target = datetime.combine(now.date() + timedelta(days=days_until_friday), market_close_wat)
         diff = target - now
@@ -90,21 +106,15 @@ def get_5m_data(symbol):
         logging.error(f"Error downloading data for {symbol}: {str(e)}")
         return None
 
-# --- ASSET-SPECIFIC OPTIMIZED STRATEGIES ---
 def check_forest_signal(pair_name, symbol):
     df = get_5m_data(symbol)
     if df is None or len(df) < 50: return None
-    
     try:
         close_series = df['Close'].squeeze()
-        high_series = df['High'].squeeze()
-        low_series = df['Low'].squeeze()
-        
         last = df.iloc[-1]
         prev = df.iloc[-2]
         price = round(float(last['Close']), 5 if "JPY" not in pair_name else 3)
 
-        # 1. LIQUIDITY TREND STRATEGY (EURUSD, GBPUSD, AUDUSD)
         if pair_name in ["EURUSD", "GBPUSD", "AUDUSD"]:
             df['ema50'] = ta.trend.ema_indicator(close_series, window=50)
             df['ema200'] = ta.trend.ema_indicator(close_series, window=200)
@@ -112,85 +122,73 @@ def check_forest_signal(pair_name, symbol):
             macd_calc = ta.trend.MACD(close_series)
             df['macd'] = macd_calc.macd()
             df['macd_signal'] = macd_calc.macd_signal()
-            
             buy = (last['ema50'] > last['ema200'] and last['rsi'] > 52 and prev['macd'] < prev['macd_signal'] and last['macd'] > last['macd_signal'])
             sell = (last['ema50'] < last['ema200'] and last['rsi'] < 48 and prev['macd'] > prev['macd_signal'] and last['macd'] < last['macd_signal'])
-            
-            sl_pips = 0.0012 # Tight protection for quiet pairs
-            tp_pips = 0.0024 # Strict 1:2 Risk to Reward
-            
+            sl_pips, tp_pips = 0.0012, 0.0024
             if buy: return {"pair": pair_name, "direction": "BUY", "entry": price, "sl": round(price - sl_pips, 5), "tp1": round(price + tp_pips, 5), "tp2": round(price + (tp_pips*1.5), 5), "timeframe": "5M"}
             if sell: return {"pair": pair_name, "direction": "SELL", "entry": price, "sl": round(price + sl_pips, 5), "tp1": round(price - tp_pips, 5), "tp2": round(price - (tp_pips*1.5), 5), "timeframe": "5M"}
 
-        # 2. VOLATILITY SCALPING STRATEGY (XAUUSD / GOLD)
         elif pair_name == "XAUUSD":
-            # Gold demands rapid indicator reaction parameters
             df['ema9'] = ta.trend.ema_indicator(close_series, window=9)
             df['ema21'] = ta.trend.ema_indicator(close_series, window=21)
             df['rsi'] = ta.momentum.rsi(close_series, window=14)
-            
             buy = (prev['ema9'] <= prev['ema21'] and last['ema9'] > last['ema21'] and last['rsi'] > 55)
             sell = (prev['ema9'] >= prev['ema21'] and last['ema9'] < last['ema21'] and last['rsi'] < 45)
-            
             if buy: return {"pair": pair_name, "direction": "BUY", "entry": price, "sl": round(price - 2.5, 2), "tp1": round(price + 4.0, 2), "tp2": round(price + 7.5, 2), "timeframe": "5M"}
             if sell: return {"pair": pair_name, "direction": "SELL", "entry": price, "sl": round(price + 2.5, 2), "tp1": round(price - 4.0, 2), "tp2": round(price - 7.5, 2), "timeframe": "5M"}
 
-        # 3. YEN BREAKOUT MOMENTUM STRATEGY (USDJPY)
         elif pair_name == "USDJPY":
             df['rsi'] = ta.momentum.rsi(close_series, window=14)
             bollinger = ta.volatility.BollingerBands(close_series, window=20, window_dev=2)
             df['bb_high'] = bollinger.bollinger_hband()
             df['bb_low'] = bollinger.bollinger_lband()
-            
             buy = (last['Close'] > last['bb_high'] and last['rsi'] > 60)
             sell = (last['Close'] < last['bb_low'] and last['rsi'] < 40)
-            
             if buy: return {"pair": pair_name, "direction": "BUY", "entry": price, "sl": round(price - 0.150, 3), "tp1": round(price + 0.300, 3), "tp2": round(price + 0.500, 3), "timeframe": "5M"}
             if sell: return {"pair": pair_name, "direction": "SELL", "entry": price, "sl": round(price + 0.150, 3), "tp1": round(price - 0.300, 3), "tp2": round(price - 0.500, 3), "timeframe": "5M"}
-
     except Exception as e:
         logging.error(f"Strategy computation error for {pair_name}: {str(e)}")
     return None
 
-# --- HISTORICAL WIN RATE EVALUATION ENGINE ---
 def update_and_get_winrate(pair_name, current_price):
-    """Monitors past trade signals against current price to calculate live historical win rates"""
     db = trade_database[pair_name]
     retained_active = []
+    has_changed = False
     
     for trade in db["active_trades"]:
         is_resolved = False
         if trade["direction"] == "BUY":
             if current_price >= trade["tp1"]:
                 db["wins"] += 1
-                is_resolved = True
+                is_resolved, has_changed = True, True
             elif current_price <= trade["sl"]:
                 db["losses"] += 1
-                is_resolved = True
+                is_resolved, has_changed = True, True
         elif trade["direction"] == "SELL":
             if current_price <= trade["tp1"]:
                 db["wins"] += 1
-                is_resolved = True
+                is_resolved, has_changed = True, True
             elif current_price >= trade["sl"]:
                 db["losses"] += 1
-                is_resolved = True
+                is_resolved, has_changed = True, True
                 
         if not is_resolved:
             retained_active.append(trade)
             
     db["active_trades"] = retained_active
     
+    # Save the updated data back to disk immediately if any trade closed
+    if has_changed:
+        save_database()
+            
     total = db["wins"] + db["losses"]
-    if total == 0:
-        return "100% (No completed trades recorded)"
-    
-    win_pct = round((db["wins"] / total) * 100, 1)
-    return f"{win_pct}% ({db['wins']}W - {db['losses']}L)"
+    if total == 0: return "100% (No completed trades recorded)"
+    return f"{round((db['wins'] / total) * 100, 1)}% ({db['wins']}W - {db['losses']}L)"
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status = get_market_status_wat()
     await update.message.reply_text(
-        "🌲 Forest Signal Bot Pro is LIVE\n"
+        "🌲 Forest Signal Bot Pro is LIVE\n\n"
         f"📊 Market Status (WAT): {status}\n"
         f"🔍 Pairs: {', '.join(MAJOR_PAIRS.keys())}\n\n"
         "Commands:\n/start - Check Status\n/signal - Force Instant Scan"
@@ -207,8 +205,12 @@ async def run_scan(app: Application) -> int:
     
     for pair_name, symbol in MAJOR_PAIRS.items():
         df = get_5m_data(symbol)
-        if df is None or df.empty:
-            continue
+        if df is None or df.empty: continue
             
         current_price = round(float(df['Close'].iloc[-1]), 5 if "JPY" not in pair_name else 3)
         win_rate_string = update_and_get_winrate(pair_name, current_price)
+        
+        sig = check_forest_signal(pair_name, symbol)
+        if sig:
+            trade_database[pair_name]["active_trades"].append({
+                "direction": sig["direction"], "entry": sig["entry"], "sl": sig["sl"], "tp1": sig["tp1"]
