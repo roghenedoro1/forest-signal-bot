@@ -13,15 +13,11 @@ from flask import Flask
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ApplicationBuilder, CallbackQueryHandler, CommandHandler, ContextTypes
 
-# Setup logging so we can see errors on Render
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 LAGOS = pytz.timezone("Africa/Lagos")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-
-if not BOT_TOKEN:
-    logger.error("BOT_TOKEN not found in environment variables!")
 
 app = Flask(__name__)
 @app.route('/')
@@ -41,46 +37,59 @@ else:
 PAIRS = {"EURUSD": "EURUSD=X", "GBPUSD": "GBPUSD=X", "USDJPY": "USDJPY=X"}
 
 def save_data():
-    with open(DATA_FILE, 'w') as f:
-        json.dump(data, f)
+    try:
+        with open(DATA_FILE, 'w') as f:
+            json.dump(data, f)
+    except Exception as e:
+        logger.error(f"Save data error: {e}")
 
 def fetch_news():
     try:
         url = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
-        r = requests.get(url, timeout=10).json()
+        r = requests.get(url, timeout=15).json()
         news_times = []
         for event in r:
-            if event['impact'] == "High" and event['country'] in ["USD", "EUR", "GBP"]:
-                event_time = datetime.datetime.strptime(event['date'] + " " + event['time'], "%Y-%m-%d %H:%M:%S")
+            if event.get('impact') == "High" and event.get('country') in ["USD", "EUR", "GBP"]:
+                dt_str = event['date'] + " + event['time']
+                event_time = datetime.datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S")
                 event_time = pytz.utc.localize(event_time).astimezone(LAGOS)
                 news_times.append(event_time.strftime("%Y-%m-%d %H:%M"))
         data["news_cache"] = news_times
         save_data()
-        logger.info(f"Fetched {len(news_times)} high impact news")
+        logger.info(f"Fetched {len(news_times)} high impact news events")
     except Exception as e:
         logger.error(f"News fetch error: {e}")
 
 def is_news_time():
     now = datetime.datetime.now(LAGOS)
     for news in data["news_cache"]:
-        news_time = LAGOS.localize(datetime.datetime.strptime(news, "%Y-%m-%d %H:%M"))
-        if abs((now - news_time).total_seconds()) < 900: # 15min buffer
-            return True
+        try:
+            news_time = LAGOS.localize(datetime.datetime.strptime(news, "%Y-%m-%d %H:%M"))
+            if abs((now - news_time).total_seconds()) < 900:
+                logger.info(f"News buffer active. Skipping signals.")
+                return True
+        except: continue
     return False
 
 def get_signal_data(symbol):
     try:
-        df = yf.Ticker(symbol).history(period="5d", interval="5m")
+        ticker = yf.Ticker(symbol)
+        df = ticker.history(period="5d", interval="5m", timeout=20)
         if df.empty or len(df) < 200:
             return None
-        close, high, low = df['Close'], df['High'], df['Low']
+
+        close = df['Close']
+        high = df['High']
+        low = df['Low']
+
         ema50 = ta.trend.EMAIndicator(close, 50).ema_indicator().iloc[-1]
         ema200 = ta.trend.EMAIndicator(close, 200).ema_indicator().iloc[-1]
-        rsi = ta.momentum.RSIIndicator(close).rsi().iloc[-1]
-        macd = ta.trend.MACD(close).macd().iloc[-1]
-        macd_sig = ta.trend.MACD(close).macd_signal().iloc[-1]
+        rsi = ta.momentum.RSIIndicator(close, window=14).rsi().iloc[-1]
+        macd_obj = ta.trend.MACD(close)
+        macd = macd_obj.macd().iloc[-1]
+        macd_sig = macd_obj.macd_signal().iloc[-1]
         price = close.iloc[-1]
-        atr = ta.volatility.AverageTrueRange(high, low, close).average_true_range().iloc[-1]
+        atr = ta.volatility.AverageTrueRange(high, low, close, window=14).average_true_range().iloc[-1]
 
         if ema50 > ema200 and rsi < 35 and macd > macd_sig:
             signal = "BUY"
@@ -91,9 +100,10 @@ def get_signal_data(symbol):
 
         sl_dist = atr * 2
         if signal == "BUY":
-            sl, tp = round(price - sl_dist, 4), round(price + sl_dist * 2, 4)
+            sl, tp = round(price - sl_dist, 5), round(price + sl_dist * 2, 5)
         else:
-            sl, tp = round(price + sl_dist, 4), round(price - sl_dist * 2, 4)
+            sl, tp = round(price + sl_dist, 5), round(price - sl_dist * 2, 5)
+
         return {"price": price, "rsi": rsi, "signal": signal, "sl": sl, "tp": tp}
     except Exception as e:
         logger.error(f"Signal error for {symbol}: {e}")
@@ -106,16 +116,17 @@ async def send_signal_to_user(bot, user_id, name, s):
         InlineKeyboardButton("❌ LOSS", callback_data=f'loss_{signal_id}')
     ]]
     msg = f"""🌲 <b>FOREST SNIPE SIGNAL</b> 🌲
+
 <b>Pair:</b> {name}
 <b>Signal:</b> {'🟢 BUY' if s['signal']=='BUY' else '🔴 SELL'}
-<b>Entry:</b> {s['price']:.4f}
-<b>SL:</b> {s['sl']:.4f}
-<b>TP:</b> {s['tp']:.4f} | 1:2 RR
-<b>RSI:</b> {s['rsi']:.1f}
+<b>Entry:</b> {s['price']:.5f}
+<b>SL:</b> {s['sl']:.5f}
+<b>TP:</b> {s['tp']:.5f} | <b>RR:</b> 1:2
+<b>RSI:</b> {s['rsi']:.2f}
 <b>Time:</b> {datetime.datetime.now(LAGOS).strftime('%H:%M WAT')}"""
     try:
         await bot.send_message(chat_id=user_id, text=msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
-        logger.info(f"Sent signal to {user_id} for {name}")
+        logger.info(f"Signal sent to {user_id} for {name} {s['signal']}")
     except Exception as e:
         logger.error(f"Failed to send to {user_id}: {e}")
 
@@ -125,13 +136,11 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(q.from_user.id)
     action = q.data.split('_')[0]
 
-    if user_id not in data["wins"]: data["wins"][user_id] = 0
-    if user_id not in data["loss"]: data["loss"][user_id] = 0
+    data["wins"].setdefault(user_id, 0)
+    data["loss"].setdefault(user_id, 0)
 
-    if action == 'win':
-        data["wins"][user_id] += 1
-    else:
-        data["loss"][user_id] += 1
+    if action == 'win': data["wins"][user_id] += 1
+    else: data["loss"][user_id] += 1
 
     save_data()
     total = data["wins"][user_id] + data["loss"][user_id]
@@ -147,9 +156,9 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id not in data["users"]:
         data["users"].append(user_id)
         save_data()
-        logger.info(f"New user: {user_id}")
+        logger.info(f"New user added: {user_id}")
     await update.message.reply_text(
-        "🌲 <b>Welcome to Forest Snipe Bot</b>\n\nYou go receive signals directly here.\nUse /winrate to check your stats.",
+        "🌲 <b>Welcome to Forest Snipe Bot</b>\n\nYou will receive high probability signals here.\nUse /winrate to check your stats.",
         parse_mode="HTML"
     )
 
@@ -160,7 +169,7 @@ async def winrate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     total = wins + loss
     rate = round(wins/total*100, 1) if total > 0 else 0
     msg = f"""📊 <b>YOUR STATS</b>
-<b>Total:</b> {total}
+<b>Total Trades:</b> {total}
 <b>Wins:</b> {wins} ✅
 <b>Loss:</b> {loss} ❌
 <b>Winrate:</b> {rate}%"""
@@ -169,31 +178,32 @@ async def winrate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def main_loop(application):
     fetch_news()
     last_news_fetch = datetime.datetime.now()
-    logger.info("Forest Bot started. Waiting for market hours...")
+    logger.info("Forest Bot started successfully")
     while True:
         now = datetime.datetime.now(LAGOS)
         if (now - last_news_fetch).total_seconds() > 21600:
             fetch_news()
             last_news_fetch = now
 
-        market_open = now.weekday() < 5 and 8 <= now.hour < 22 # Mon-Fri 8am-10pm WAT
+        market_open = now.weekday() < 5 and 8 <= now.hour < 22
         if market_open and not is_news_time():
-            if now.minute % 5 == 3: # Run every 5min at :03, :08, :13 etc
+            if now.minute % 5 == 3:
                 time_key = now.strftime("%Y%m%d_%H:%M")
                 if time_key not in data["sent_signals"]:
-                    logger.info(f"Scanning for signals at {now.strftime('%H:%M')}")
+                    logger.info(f"Scanning markets at {now.strftime('%H:%M')}")
                     for name, symbol in PAIRS.items():
                         s = get_signal_data(symbol)
                         if s:
                             for user_id in data["users"]:
                                 await send_signal_to_user(application.bot, user_id, name, s)
                     data["sent_signals"].append(time_key)
+                    if len(data["sent_signals"]) > 100: data["sent_signals"] = data["sent_signals"][-100:]
                     save_data()
         await asyncio.sleep(30)
 
 async def main():
     if not BOT_TOKEN:
-        logger.error("Stopping: No BOT_TOKEN")
+        logger.critical("BOT_TOKEN not set. Exiting.")
         return
 
     application = ApplicationBuilder().token(BOT_TOKEN).build()
@@ -201,10 +211,14 @@ async def main():
     application.add_handler(CommandHandler("winrate", winrate_command))
     application.add_handler(CallbackQueryHandler(button))
 
+    # Run Flask in thread
     threading.Thread(target=run_flask, daemon=True).start()
-    asyncio.create_task(main_loop(application))
+
+    # Run main_loop in the same event loop
+    application.task = asyncio.create_task(main_loop(application))
+
     logger.info("Starting polling...")
-    await application.run_polling()
+    await application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
     asyncio.run(main())
