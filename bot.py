@@ -50,7 +50,7 @@ def fetch_news():
         news_times = []
         for event in r:
             if event.get('impact') == "High" and event.get('country') in ["USD", "EUR", "GBP"]:
-                dt_str = event['date'] + " + event['time'] # FIXED LINE 53
+                dt_str = event['date'] + " " + event['time'] # <-- THIS IS THE CORRECT LINE
                 event_time = datetime.datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S")
                 event_time = pytz.utc.localize(event_time).astimezone(LAGOS)
                 news_times.append(event_time.strftime("%Y-%m-%d %H:%M"))
