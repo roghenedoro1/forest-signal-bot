@@ -68,9 +68,9 @@ def check_forest_signal(pair_name, symbol):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🌲 Forest Signal Bot v3 is LIVE\n"
+        "🌲 Forest Signal Bot v2 is LIVE\n"
         f"Scanning: {', '.join(MAJOR_PAIRS.keys())} on 5M\n"
-        "Frequency: Every 10 minutes\n"
+        "Frequency: Every 10 minutes\n\n"
         "Commands:\n/start - Status\n/signal - Manual scan"
     )
 
@@ -110,23 +110,23 @@ async def auto_scanner(app: Application):
         try:
             await run_scan(app)
         except Exception as e:
-            logging.critical(f"Loop runtime exception: {str(e)}")
+            logging.critical(f"Loop runtime exception occurred within scanner execution: {str(e)}")
         await asyncio.sleep(600)
 
-async def main():
+async def post_init_hook(app: Application) -> None:
+    asyncio.create_task(auto_scanner(app))
+
+def main():
     if not TOKEN:
         raise ValueError("CRITICAL: BOT_TOKEN is absent from host environment variables.")
     if not CHAT_ID:
         logging.warning("Warning: CHAT_ID config is absent. Automated broadcast warnings will fail.")
     
-    app = ApplicationBuilder().token(TOKEN).build()
+    app = ApplicationBuilder().token(TOKEN).post_init(post_init_hook).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("signal", signal))
-    
-    asyncio.create_task(auto_scanner(app))
-    
     logging.info("Establishing persistent long polling stack connection...")
-    await app.run_polling()
+    app.run_polling()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
