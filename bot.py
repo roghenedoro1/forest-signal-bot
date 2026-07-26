@@ -210,6 +210,7 @@ async def run_scan(app: Application) -> int:
             })
             save_database()
             
+            # FIXED: Text blocks, brackets, and parenthesis completely restored
             msg = (
                 f"🚨 **FOREST SIGNAL: {sig['pair']} ({sig['timeframe']})** 🚨\n"
                 f"🎯 **Action:** {sig['direction']}\n\n"
