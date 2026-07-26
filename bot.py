@@ -49,11 +49,11 @@ def fetch_news():
         r = requests.get(url, timeout=15).json()
         news_times = []
         for event in r:
-            if event.get('impact') == "High" and event.get('country') in ["USD", "EUR", "GBP"]:
-                dt_str = event['date'] + " + event['time']
-                event_time = datetime.datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S")
-                event_time = pytz.utc.localize(event_time).astimezone(LAGOS)
-                news_times.append(event_time.strftime("%Y-%m-%d %H:%M"))
+    if event.get('impact') == "High" and event.get('country') in ["USD", "EUR", "GBP"]:
+        dt_str = event['date'] + " " + event['time']  # <-- FIXED HERE
+        event_time = datetime.datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S")
+        event_time = pytz.utc.localize(event_time).astimezone(LAGOS)
+        news_times.append(event_time.strftime("%Y-%m-%d %H:%M"))
         data["news_cache"] = news_times
         save_data()
         logger.info(f"Fetched {len(news_times)} high impact news events")
