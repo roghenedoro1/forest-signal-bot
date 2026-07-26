@@ -5,10 +5,12 @@ import telegram
 import yfinance as yf
 import pandas as pd
 import ta
+import requests  # FIXED: Added to handle browser sessions
 from datetime import datetime
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, Application
 
+# Configure structured production logs
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
@@ -25,9 +27,18 @@ MAJOR_PAIRS = {
     "AUDUSD": "AUDUSD=X"
 }
 
+# FIXED: Create a custom request session to bypass Yahoo's anti-scraping blocks
+custom_session = requests.Session()
+custom_session.headers.update({
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.5',
+})
+
 def get_5m_data(symbol):
     try:
-        df = yf.download(symbol, period="5d", interval="5m", progress=False)
+        # FIXED: Injected session to spoof a modern web browser request
+        df = yf.download(symbol, period="5d", interval="5m", progress=False, session=custom_session)
         if df.empty: 
             logging.warning(f"No data returned for symbol: {symbol}")
             return None
@@ -70,18 +81,33 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🌲 Forest Signal Bot v2 is LIVE\n"
         f"Scanning: {', '.join(MAJOR_PAIRS.keys())} on 5M\n"
-        "Frequency: Every 10 minutes\n\n"
+        "Frequency: Every 10 minutes\n"
         "Commands:\n/start - Status\n/signal - Manual scan"
     )
 
+# FIXED: Modified to provide immediate, transparent user feedback
 async def signal(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🔍 Scanning major pairs now...")
-    await run_scan(context.application)
+    status_msg = await update.message.reply_text("🔍 Scanning major pairs now...")
+    
+    # Run the market scan and capture the count of successfully transmitted signals
+    signals_sent = await run_scan(context.application)
+    
+    # Send conclusion updates so user knows the bot did not get stuck
+    if signals_sent > 0:
+        await update.message.reply_text(f"✅ Scan finished. Sent {signals_sent} active trading signal(s).")
+    else:
+        await update.message.reply_text(
+            "⚠️ Scan finished. No valid trade setups found at this time.\n\n"
+            "Note: Markets are completely closed on weekends, meaning Yahoo Finance will return empty datasets."
+        )
 
-async def run_scan(app: Application):
+# FIXED: Returns integer counter for UI tracking feedback loops
+async def run_scan(app: Application) -> int:
     if not CHAT_ID:
         logging.error("Cannot run scan: CHAT_ID environment variable is missing!")
-        return
+        return 0
+        
+    signals_count = 0
     for pair_name, symbol in MAJOR_PAIRS.items():
         logging.info(f"Checking {pair_name}")
         sig = check_forest_signal(pair_name, symbol)
@@ -99,9 +125,12 @@ async def run_scan(app: Application):
             )
             try:
                 await app.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown")
+                signals_count += 1
                 await asyncio.sleep(1)
             except Exception as e:
                 logging.error(f"Failed to transmit Telegram message: {str(e)}")
+                
+    return signals_count
 
 async def auto_scanner(app: Application):
     await asyncio.sleep(15)
