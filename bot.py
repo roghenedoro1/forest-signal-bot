@@ -10,8 +10,7 @@ import json
 from datetime import datetime, timedelta, time as datetime_time
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, Application
-from http.server import BaseHTTPRequestHandler, HTTPServer
-import threading
+from aiohttp import web
 
 # Configure structured production logs
 logging.basicConfig(
@@ -37,7 +36,6 @@ def load_database():
                 return json.load(f)
         except Exception as e:
             logging.error(f"Error reading database file: {str(e)}")
-    
     return {pair: {"wins": 0, "losses": 0, "active_trades": []} for pair in MAJOR_PAIRS}
 
 def save_database():
@@ -173,7 +171,6 @@ def update_and_get_winrate(pair_name, current_price):
             retained_active.append(trade)
             
     db["active_trades"] = retained_active
-    
     if has_changed:
         save_database()
             
