@@ -8,7 +8,6 @@ import os
 import requests
 import threading
 import logging
-from flask import Flask
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, CallbackContext
 
@@ -17,14 +16,6 @@ logger = logging.getLogger(__name__)
 
 LAGOS = pytz.timezone("Africa/Lagos")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-
-app = Flask(__name__)
-@app.route('/')
-def home():
-    return "Forest Bot is Alive"
-
-def run_flask():
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
 
 DATA_FILE = "forest_data.json"
 if os.path.exists(DATA_FILE):
@@ -97,10 +88,7 @@ def get_signal_data(symbol):
 
 def send_signal_to_user(bot, user_id, name, s):
     signal_id = f"{name}_{user_id}_{int(time.time())}"
-    keyboard = [[
-        InlineKeyboardButton("✅ WIN", callback_data=f'win_{signal_id}'),
-        InlineKeyboardButton("❌ LOSS", callback_data=f'loss_{signal_id}')
-    ]]
+    keyboard = [[InlineKeyboardButton("✅ WIN", callback_data=f'win_{signal_id}'), InlineKeyboardButton("❌ LOSS", callback_data=f'loss_{signal_id}')]]
     msg = f"""🌲 <b>FOREST SNIPE SIGNAL</b> 🌲
 <b>Pair:</b> {name}
 <b>Signal:</b> {'🟢 BUY' if s['signal']=='BUY' else '🔴 SELL'}
@@ -109,19 +97,13 @@ def send_signal_to_user(bot, user_id, name, s):
 <b>TP:</b> {s['tp']:.5f} | <b>RR:</b> 1:2
 <b>RSI:</b> {s['rsi']:.2f}
 <b>Time:</b> {datetime.datetime.now(LAGOS).strftime('%H:%M WAT')}"""
-    try:
-        bot.send_message(chat_id=user_id, text=msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
-        logger.info(f"Signal sent to {user_id} for {name}")
-    except Exception as e:
-        logger.error(f"Failed to send to {user_id}: {e}")
+    try: bot.send_message(chat_id=user_id, text=msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
+    except Exception as e: logger.error(f"Failed to send to {user_id}: {e}")
 
 def button(update, context: CallbackContext):
-    q = update.callback_query
-    q.answer()
-    user_id = str(q.from_user.id)
-    action = q.data.split('_')[0]
-    data["wins"].setdefault(user_id, 0)
-    data["loss"].setdefault(user_id, 0)
+    q = update.callback_query; q.answer()
+    user_id = str(q.from_user.id); action = q.data.split('_')[0]
+    data["wins"].setdefault(user_id, 0); data["loss"].setdefault(user_id, 0)
     if action == 'win': data["wins"][user_id] += 1
     else: data["loss"][user_id] += 1
     save_data()
@@ -131,28 +113,21 @@ def button(update, context: CallbackContext):
 
 def start_command(update, context: CallbackContext):
     user_id = str(update.message.chat_id)
-    if user_id not in data["users"]:
-        data["users"].append(user_id)
-        save_data()
+    if user_id not in data["users"]: data["users"].append(user_id); save_data()
     update.message.reply_text("🌲 <b>Welcome to Forest Snipe Bot</b>\n\nYou will receive high probability signals here.\nUse /winrate to check your stats.", parse_mode="HTML")
 
 def winrate_command(update, context: CallbackContext):
     user_id = str(update.message.chat_id)
     wins, loss = data["wins"].get(user_id, 0), data["loss"].get(user_id, 0)
-    total = wins + loss
-    rate = round(wins/total*100, 1) if total > 0 else 0
-    msg = f"""📊 <b>YOUR STATS</b>\n<b>Total Trades:</b> {total}\n<b>Wins:</b> {wins} ✅\n<b>Loss:</b> {loss} ❌\n<b>Winrate:</b> {rate}%"""
-    update.message.reply_text(msg, parse_mode="HTML")
+    total = wins + loss; rate = round(wins/total*100, 1) if total > 0 else 0
+    update.message.reply_text(f"📊 <b>YOUR STATS</b>\n<b>Total Trades:</b> {total}\n<b>Wins:</b> {wins} ✅\n<b>Loss:</b> {loss} ❌\n<b>Winrate:</b> {rate}%", parse_mode="HTML")
 
 def main_loop(bot):
-    fetch_news()
-    last_news_fetch = datetime.datetime.now()
+    fetch_news(); last_news_fetch = datetime.datetime.now()
     logger.info("Forest Bot started successfully")
     while True:
         now = datetime.datetime.now(LAGOS)
-        if (now - last_news_fetch).total_seconds() > 21600:
-            fetch_news()
-            last_news_fetch = now
+        if (now - last_news_fetch).total_seconds() > 21600: fetch_news(); last_news_fetch = now
         market_open = now.weekday() < 5 and 8 <= now.hour < 22
         if market_open and not is_news_time():
             if now.minute % 5 == 3:
@@ -162,31 +137,22 @@ def main_loop(bot):
                     for name, symbol in PAIRS.items():
                         s = get_signal_data(symbol)
                         if s:
-                            for user_id in data["users"]:
-                                send_signal_to_user(bot, user_id, name, s)
+                            for user_id in data["users"]: send_signal_to_user(bot, user_id, name, s)
                     data["sent_signals"].append(time_key)
                     if len(data["sent_signals"]) > 100: data["sent_signals"] = data["sent_signals"][-100:]
                     save_data()
         time.sleep(30)
 
 def main():
-    if not BOT_TOKEN:
-        logger.critical("BOT_TOKEN not set. Exiting.")
-        return
-
+    if not BOT_TOKEN: logger.critical("BOT_TOKEN not set. Exiting."); return
     updater = Updater(BOT_TOKEN, use_context=True)
     dp = updater.dispatcher
-
     dp.add_handler(CommandHandler("start", start_command))
     dp.add_handler(CommandHandler("winrate", winrate_command))
     dp.add_handler(CallbackQueryHandler(button))
-
-    threading.Thread(target=run_flask, daemon=True).start()
     threading.Thread(target=main_loop, args=(updater.bot,), daemon=True).start()
-
     logger.info("Starting polling...")
-    updater.start_polling()
-    updater.idle()
+    updater.start_polling(); updater.idle()
 
 if __name__ == '__main__':
     main()
