@@ -1,3 +1,9 @@
+try:
+    import imghdr
+except ModuleNotFoundError:
+    import imghdr as _imghdr
+    import sys
+    sys.modules['imghdr'] = _imghdr
 import time
 import datetime
 import pytz
