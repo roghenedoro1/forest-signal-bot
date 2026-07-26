@@ -3,4 +3,3 @@ yfinance==0.2.37
 ta==0.11.0
 pytz
 requests
-imghdr==0.9.0
