@@ -1,7 +1,6 @@
 python-telegram-bot==20.7
-python-dotenv==1.0.1
-yfinance
-ta
+yfinance==0.2.37
+ta==0.11.0
 pytz
 requests
 Flask
