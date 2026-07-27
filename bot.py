@@ -14,7 +14,7 @@ logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=lo
 TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 TD_KEY = os.getenv("TWELVEDATA_KEY") # Make sure this matches Render
-DB_FILE = "/var/data/trade_database.json"
+DB_FILE = "trade_database.json"
 
 MAJOR_PAIRS = {
     "EUR/USD": "EUR/USD",
