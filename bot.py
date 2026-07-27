@@ -9,8 +9,8 @@ logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=lo
 TOKEN, CHAT_ID, FH_KEY = os.getenv("BOT_TOKEN"), os.getenv("CHAT_ID"), os.getenv("FINNHUB_KEY")
 DB_FILE = "trade_database.json"
 MAJOR_PAIRS = {
-    "EURUSD": "OANDA:EUR_USD", "GBPUSD": "OANDA:GBP_USD", 
-    "XAUUSD": "OANDA:XAU_USD", "USDJPY": "OANDA:USD_JPY", "AUDUSD": "OANDA:AUD_USD"
+    "EURUSD": "EUR/USD", "GBPUSD": "GBP/USD", 
+    "XAUUSD": "XAU/USD", "USDJPY": "USD/JPY", "AUDUSD": "AUD/USD"
 }
 
 def load_database():
