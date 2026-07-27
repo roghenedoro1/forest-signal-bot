@@ -97,41 +97,49 @@ def calculate_targets(pair_name, direction, entry_price):
     return round(tp, decimals), round(sl, decimals)
 
 async def get_5m_data(symbol):
-    """FIXED: Proper Twelve Data endpoint"""
     if not TD_KEY:
         logging.error("Missing TWELVEDATA_KEY environment configuration.")
         return None
+
     try:
-        # CORRECT URL
-        url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval=5min&outputsize=300&apikey={TD_KEY}"
+        url = (
+            f"https://api.twelvedata.com/time_series"
+            f"?symbol={symbol}&interval=5min&outputsize=300&apikey={TD_KEY}"
+        )
+
         async with aiohttp.ClientSession() as session:
             async with session.get(url, timeout=15) as response:
                 res = await response.json()
 
+        # Check for API errors
         if res.get("status") == "error":
-    logging.warning(f"Twelve Data: {res.get('message')}")
-    return None
-
-candles = res.get("values")
-if not candles:
-    logging.warning(f"No candle data returned for {symbol}")
-    return None
-            logging.warning(f"Twelve Data error for {symbol}: {res.get('message', 'No data')}")
+            logging.warning(f"Twelve Data: {res.get('message')}")
             return None
 
-        candles = res.get('values')
+        candles = res.get("values")
         if not candles:
+            logging.warning(f"No candle data returned for {symbol}")
             return None
 
         df = pd.DataFrame(candles)
-        df['datetime'] = pd.to_datetime(df['datetime'])
-        df.set_index('datetime', inplace=True)
+        df["datetime"] = pd.to_datetime(df["datetime"])
+        df.set_index("datetime", inplace=True)
 
-        for col in ['open', 'high', 'low', 'close']:
+        for col in ["open", "high", "low", "close"]:
             df[col] = pd.to_numeric(df[col])
 
-        df.rename(columns={'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close'}, inplace=True)
-        return df.sort_index(ascending=True)
+        df.rename(
+            columns={
+                "open": "Open",
+                "high": "High",
+                "low": "Low",
+                "close": "Close",
+            },
+            inplace=True,
+        )
+
+        return df.sort_index()
+
     except Exception as e:
         logging.error(f"Twelve Data Fetch error for {symbol}: {e}")
         return None
