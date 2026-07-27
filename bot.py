@@ -40,7 +40,7 @@ def save_database():
     """Saves updated trading records to disk."""
     try:
         #Create the /var/data folder automatically if it does not exist yet
-        os.makedirs(os.path.dirname(DB_FILE),
+        os.makedirs(os.path.dirname(DB_FILE), exist_ok=True)
                     
         with open(DB_FILE, "w") as f:
             json.dump(trade_database, f, indent=4)
