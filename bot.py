@@ -14,7 +14,7 @@ logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=lo
 TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 TD_KEY = os.getenv("TWELVEDATA_KEY") # Make sure this matches Render
-DB_FILE = "trade_database.json"
+DB_FILE = "./data/trade_database.json"
 
 MAJOR_PAIRS = {
     "EUR/USD": "EUR/USD",
@@ -108,7 +108,14 @@ async def get_5m_data(symbol):
             async with session.get(url, timeout=15) as response:
                 res = await response.json()
 
-        if res.get('status')!= 'ok':
+        if res.get("status") == "error":
+    logging.warning(f"Twelve Data: {res.get('message')}")
+    return None
+
+candles = res.get("values")
+if not candles:
+    logging.warning(f"No candle data returned for {symbol}")
+    return None
             logging.warning(f"Twelve Data error for {symbol}: {res.get('message', 'No data')}")
             return None
 
