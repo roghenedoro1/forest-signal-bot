@@ -1,209 +1,285 @@
-import os, logging, asyncio, pandas as pd, ta, json
-from datetime import datetime, timedelta, time as datetime_time
+import os
+import logging
+import asyncio
+import pandas as pd
+import ta
+import json
+from datetime import datetime, timedelta, time as datetime_time, timezone
+import aiohttp
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, Application
-import aiohttp 
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
 
-TOKEN, CHAT_ID, FH_KEY = os.getenv("BOT_TOKEN"), os.getenv("CHAT_ID"), os.getenv("FINNHUB_KEY")
-DB_FILE = "trade_database.json"
+TOKEN = os.getenv("BOT_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
+TD_KEY = os.getenv("TWELVEDATA_KEY") # Make sure this matches Render
+DB_FILE = "/var/data/trade_database.json"
+
 MAJOR_PAIRS = {
-    "EURUSD": "EUR/USD", "GBPUSD": "GBP/USD", 
-    "XAUUSD": "XAU/USD", "USDJPY": "USD/JPY", "AUDUSD": "AUD/USD"
+    "EUR/USD": "EUR/USD",
+    "GBP/USD": "GBP/USD",
+    "XAU/USD": "XAU/USD",
+    "USD/JPY": "USD/JPY",
+    "AUD/USD": "AUD/USD"
 }
+
+TP_PIPS = 15
+SL_PIPS = 15
 
 def load_database():
     if os.path.exists(DB_FILE):
         try:
-            with open(DB_FILE, "r") as f: return json.load(f)
-        except Exception as e: logging.error(f"DB read error: {e}")
+            with open(DB_FILE, "r") as f:
+                return json.load(f)
+        except Exception as e:
+            logging.error(f"DB read error: {e}")
     return {pair: {"wins": 0, "losses": 0, "active_trades": []} for pair in MAJOR_PAIRS}
 
 def save_database():
     try:
-        with open(DB_FILE, "w") as f: json.dump(trade_database, f, indent=4)
-    except Exception as e: logging.error(f"DB write error: {e}")
+        with open(DB_FILE, "w") as f:
+            json.dump(trade_database, f, indent=4)
+    except Exception as e:
+        logging.error(f"DB write error: {e}")
 
 trade_database = load_database()
 
 def get_market_status_wat():
-    now = datetime.utcnow() + timedelta(hours=1)
+    now = datetime.now(timezone.utc) + timedelta(hours=1)
     weekday, now_time = now.weekday(), now.time()
     m_open, m_close = datetime_time(22, 0), datetime_time(22, 0)
+
     if weekday == 5:
         target = datetime.combine(now.date() + timedelta(days=1), m_open)
-        diff = target - now
-        return f"🔴 Closed (Opens in {diff.seconds // 3600}h {(diff.seconds % 3600) // 60}m)"
+        diff = target - now.replace(tzinfo=None)
+        return f"🔴 Closed (Opens in {diff.seconds // 3600}h {(diff.seconds % 3600) // 60}m)", False
     elif weekday == 6:
         if now_time < m_open:
             target = datetime.combine(now.date(), m_open)
-            diff = target - now
-            return f"🔴 Closed (Opens in {diff.seconds // 3600}h {(diff.seconds % 3600) // 60}m)"
-        diff = datetime.combine(now.date() + timedelta(days=5 - weekday), m_close) - now
-        return f"🟢 Open (Closes in {diff.days}d {diff.seconds // 3600}h)"
+            diff = target - now.replace(tzinfo=None)
+            return f"🔴 Closed (Opens in {diff.seconds // 3600}h {(diff.seconds % 3600) // 60}m)", False
+        diff = datetime.combine(now.date() + timedelta(days=5 - weekday), m_close) - now.replace(tzinfo=None)
+        return f"🟢 Open (Closes in {diff.days}d {diff.seconds // 3600}h)", True
     elif weekday == 4:
         if now_time >= m_close:
-            diff = datetime.combine(now.date() + timedelta(days=2), m_open) - now
-            return f"🔴 Closed (Opens in {diff.days}d {diff.seconds // 3600}h)"
-        diff = datetime.combine(now.date(), m_close) - now
-        return f"🟢 Open (Closes in {diff.seconds // 3600}h {(diff.seconds % 3600) // 60}m)"
-    diff = datetime.combine(now.date() + timedelta(days=(4 - weekday)), m_close) - now
-    return f"🟢 Open (Closes in {diff.days}d {diff.seconds // 3600}h)"
+            diff = datetime.combine(now.date() + timedelta(days=2), m_open) - now.replace(tzinfo=None)
+            return f"🔴 Closed (Opens in {diff.days}d {diff.seconds // 3600}h)", False
+        diff = datetime.combine(now.date(), m_close) - now.replace(tzinfo=None)
+        return f"🟢 Open (Closes in {diff.seconds // 3600}h {(diff.seconds % 3600) // 60}m)", True
+
+    diff = datetime.combine(now.date() + timedelta(days=(4 - weekday)), m_close) - now.replace(tzinfo=None)
+    return f"🟢 Open (Closes in {diff.days}d {diff.seconds // 3600}h)", True
+
+def calculate_targets(pair_name, direction, entry_price):
+    if "JPY" in pair_name:
+        pip_value = 0.01
+    elif "XAU" in pair_name:
+        pip_value = 0.1
+    else:
+        pip_value = 0.0001
+
+    tp_dist = TP_PIPS * pip_value
+    sl_dist = SL_PIPS * pip_value
+
+    if direction == "BUY":
+        tp = entry_price + tp_dist
+        sl = entry_price - sl_dist
+    else:
+        tp = entry_price - tp_dist
+        sl = entry_price + sl_dist
+
+    decimals = 3 if ("JPY" in pair_name or "XAU" in pair_name) else 5
+    return round(tp, decimals), round(sl, decimals)
 
 async def get_5m_data(symbol):
-    if not FH_KEY: return None
+    """FIXED: Proper Twelve Data endpoint"""
+    if not TD_KEY:
+        logging.error("Missing TWELVEDATA_KEY environment configuration.")
+        return None
     try:
-        end = int(datetime.utcnow().timestamp())
-        # FIX 1: Corrected Finnhub URL
-        url = f"https://finnhub.io/api/v1/forex/candle?symbol={symbol}&resolution=5&from={end - 432000}&to={end}&token={FH_KEY}"
-        
+        # CORRECT URL
+        url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval=5min&outputsize=300&apikey={TD_KEY}"
         async with aiohttp.ClientSession() as session:
-            async with session.get(url) as response:
+            async with session.get(url, timeout=15) as response:
                 res = await response.json()
-        
-        if res.get('s') != 'ok': 
-            logging.warning(f"Finnhub status not OK for {symbol}: {res.get('msg', 'No market data')}")
+
+        if res.get('status')!= 'ok':
+            logging.warning(f"Twelve Data error for {symbol}: {res.get('message', 'No data')}")
             return None
-            
-        required_keys = ['o', 'h', 'l', 'c', 't']
-        if not all(k in res for k in required_keys):
-            logging.warning(f"Incomplete data for {symbol}")
+
+        candles = res.get('values')
+        if not candles:
             return None
-            
-        df = pd.DataFrame({'Open': res['o'], 'High': res['h'], 'Low': res['l'], 'Close': res['c']}, index=pd.to_datetime(res['t'], unit='s'))
+
+        df = pd.DataFrame(candles)
+        df['datetime'] = pd.to_datetime(df['datetime'])
+        df.set_index('datetime', inplace=True)
+
+        for col in ['open', 'high', 'low', 'close']:
+            df[col] = pd.to_numeric(df[col])
+
+        df.rename(columns={'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close'}, inplace=True)
         return df.sort_index(ascending=True)
     except Exception as e:
-        logging.error(f"Fetch error for {symbol}: {e}")
+        logging.error(f"Twelve Data Fetch error for {symbol}: {e}")
         return None
 
 def check_forest_signal(pair_name, df):
-    if df is None or len(df) < 50: return None
+    if df is None or len(df) < 50:
+        return None
     try:
-        close_series = df['Close'].squeeze()
-        last, prev = df.iloc[-1], df.iloc[-2]
-        price = round(float(last['Close']), 5 if "JPY" not in pair_name else 3)
-        
-        # FIX 3: Prevent duplicate signals - don't signal if same direction already active
+        rsi = ta.momentum.RSIIndicator(close=df['Close'], window=14).rsi()
+        macd = ta.trend.MACD(close=df['Close'])
+        macd_line = macd.macd()
+        macd_signal = macd.macd_signal()
+
+        last_rsi = rsi.iloc[-1]
+        last_macd_line = macd_line.iloc[-1]
+        last_macd_signal = macd_signal.iloc[-1]
+
+        last_row = df.iloc[-1]
+        price = round(float(last_row['Close']), 5 if "JPY" not in pair_name and "XAU" not in pair_name else 3)
+
         existing_dirs = [t['direction'] for t in trade_database[pair_name]['active_trades']]
-        
-        if pair_name in ["EURUSD", "GBPUSD", "AUDUSD"]:
-            df['ema50'] = ta.trend.ema_indicator(close_series, window=50)
-            df['ema200'] = ta.trend.ema_indicator(close_series, window=200)
-            df['rsi'] = ta.momentum.rsi(close_series, window=14)
-            m = ta.trend.MACD(close_series)
-            df['macd'], df['macd_sig'] = m.macd(), m.macd_signal()
-            buy = (last['ema50'] > last['ema200'] and last['rsi'] > 52 and prev['macd'] < prev['macd_sig'] and last['macd'] > last['macd_sig'] and "BUY" not in existing_dirs)
-            sell = (last['ema50'] < last['ema200'] and last['rsi'] < 48 and prev['macd'] > prev['macd_sig'] and last['macd'] < last['macd_sig'] and "SELL" not in existing_dirs)
-            p = 0.0012
-            if buy: return {"pair": pair_name, "direction": "BUY", "entry": price, "sl": round(price - p, 5), "tp1": round(price + (p*2), 5), "tp2": round(price + (p*3), 5)}
-            if sell: return {"pair": pair_name, "direction": "SELL", "entry": price, "sl": round(price + p, 5), "tp1": round(price - (p*2), 5), "tp2": round(price - (p*3), 5)}
-        elif pair_name == "XAUUSD":
-            df['ema9'] = ta.trend.ema_indicator(close_series, window=9)
-            df['ema21'] = ta.trend.ema_indicator(close_series, window=21)
-            df['rsi'] = ta.momentum.rsi(close_series, window=14)
-            buy = (prev['ema9'] <= prev['ema21'] and last['ema9'] > last['ema21'] and last['rsi'] > 55 and "BUY" not in existing_dirs)
-            sell = (prev['ema9'] >= prev['ema21'] and last['ema9'] < last['ema21'] and last['rsi'] < 45 and "SELL" not in existing_dirs)
-            if buy: return {"pair": pair_name, "direction": "BUY", "entry": price, "sl": round(price - 2.5, 2), "tp1": round(price + 4.0, 2), "tp2": round(price + 7.5, 2)}
-            if sell: return {"pair": pair_name, "direction": "SELL", "entry": price, "sl": round(price + 2.5, 2), "tp1": round(price - 4.0, 2), "tp2": round(price - 7.5, 2)}
-        elif pair_name == "USDJPY":
-            df['rsi'] = ta.momentum.rsi(close_series, window=14)
-            b = ta.volatility.BollingerBands(close_series, window=20, window_dev=2)
-            df['bb_h'], df['bb_l'] = b.bollinger_hband(), b.bollinger_lband()
-            buy = (last['Close'] > last['bb_h'] and last['rsi'] > 60 and "BUY" not in existing_dirs)
-            sell = (last['Close'] < last['bb_l'] and last['rsi'] < 40 and "SELL" not in existing_dirs)
-            if buy: return {"pair": pair_name, "direction": "BUY", "entry": price, "sl": round(price - 0.15, 3), "tp1": round(price + 0.3, 3), "tp2": round(price + 0.5, 3)}
-            if sell: return {"pair": pair_name, "direction": "SELL", "entry": price, "sl": round(price + 0.15, 3), "tp1": round(price - 0.3, 3), "tp2": round(price - 0.5, 3)}
-    except Exception as e: logging.error(f"Strategy error for {pair_name}: {e}")
-    return None
 
-def update_and_get_winrate(pair_name, current_price):
-    db = trade_database[pair_name]
-    retained, has_changed = [], False
-    for t in db["active_trades"]:
-        res = False
-        if t["direction"] == "BUY":
-            if current_price >= t["tp1"]: db["wins"] += 1; res = has_changed = True
-            elif current_price <= t["sl"]: db["losses"] += 1; res = has_changed = True
-        elif t["direction"] == "SELL":
-            if current_price <= t["tp1"]: db["wins"] += 1; res = has_changed = True
-            elif current_price >= t["sl"]: db["losses"] += 1; res = has_changed = True
-        if not res: retained.append(t)
-    db["active_trades"] = retained
-    if has_changed: save_database()
-    total = db["wins"] + db["losses"]
-    if total == 0: return "100% (No trades resolved)"
-    return f"{round((db['wins'] / total) * 100, 1)}% ({db['wins']}W - {db['losses']}L)"
+        if last_rsi < 30 and last_macd_line > last_macd_signal:
+            if "BUY" not in existing_dirs:
+                return {"direction": "BUY", "price": price, "rsi": round(last_rsi, 2)}
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"🌲 Bot Pro Active (Finnhub Engine)\n📊 Market: {get_market_status_wat()}\nCommands:\n/start - Status\n/signal - Scan")
+        elif last_rsi > 70 and last_macd_line < last_macd_signal:
+            if "SELL" not in existing_dirs:
+                return {"direction": "SELL", "price": price, "rsi": round(last_rsi, 2)}
 
-async def signal(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🔍 Running real-time market analysis via Finnhub...")
-    await run_scan(context.application)
-
-async def run_scan(app: Application) -> int:
-    if not CHAT_ID: 
-        logging.warning("CHAT_ID is not configured.")
-        return 0
-    
-    # Skip if market closed to save API calls
-    if "Closed" in get_market_status_wat():
-        logging.info("Market closed. Skipping scan.")
-        return 0
-        
-    signals_count = 0
-    for pair_name, fh_symbol in MAJOR_PAIRS.items():
-        df = await get_5m_data(fh_symbol)
-        if df is None or df.empty:
-            await asyncio.sleep(1) # Rate limit protection
-            continue
-            
-        current_price = float(df['Close'].iloc[-1])
-        win_rate_str = update_and_get_winrate(pair_name, current_price)
-        
-        signal_data = check_forest_signal(pair_name, df)
-        if signal_data:
-            signals_count += 1
-            trade_database[pair_name]["active_trades"].append(signal_data)
-            save_database()
-            
-            message = (
-                f"🌲 <b>NEW FOREX SIGNAL: {pair_name}</b> 🌲\n\n"
-                f"<b>Action:</b> {signal_data['direction']}\n"
-                f"<b>Entry Price:</b> {signal_data['entry']}\n"
-                f"<b>Stop Loss:</b> {signal_data['sl']}\n"
-                f"<b>Take Profit 1:</b> {signal_data['tp1']}\n"
-                f"<b>Take Profit 2:</b> {signal_data['tp2']}\n\n"
-                f"📈 <b>Historical Win Rate:</b> {win_rate_str}"
-            )
-            try:
-                await app.bot.send_message(chat_id=CHAT_ID, text=message, parse_mode="HTML")
-            except Exception as e:
-                logging.error(f"Failed to send alert for {pair_name}: {e}")
-        await asyncio.sleep(1) # Rate limit protection
-    return signals_count
-
-# FIX 2: JobQueue for safe background scanning
-async def run_background_job(context: ContextTypes.DEFAULT_TYPE):
-    try:
-        await run_scan(context.application)
+        return None
     except Exception as e:
-        logging.critical(f"Critical exception in background job: {e}")
+        logging.error(f"Signal calculations error on {pair_name}: {e}")
+        return None
 
-# FIX 2: Completed main() function
+async def manage_active_trades(pair_id, pair_label, current_price, context):
+    active_trades = trade_database[pair_id].get('active_trades', [])
+    remaining_trades = []
+
+    for trade in active_trades:
+        direction = trade['direction']
+        tp = trade['tp']
+        sl = trade['sl']
+        entry = trade['entry_price']
+        closed = False
+        outcome = ""
+
+        if direction == "BUY":
+            if current_price >= tp:
+                closed, outcome = True, "✅ WIN (TP Hit)"
+            elif current_price <= sl:
+                closed, outcome = True, "❌ LOSS (SL Hit)"
+        elif direction == "SELL":
+            if current_price <= tp:
+                closed, outcome = True, "✅ WIN (TP Hit)"
+            elif current_price >= sl:
+                closed, outcome = True, "❌ LOSS (SL Hit)"
+
+        if closed:
+            if "WIN" in outcome:
+                trade_database[pair_id]['wins'] += 1
+            else:
+                trade_database[pair_id]['losses'] += 1
+
+            total_wins = trade_database[pair_id]['wins']
+            total_losses = trade_database[pair_id]['losses']
+            win_rate = (total_wins / (total_wins + total_losses)) * 100 if (total_wins + total_losses) > 0 else 0
+
+            msg = f"🏁 <b>Trade Closed: {pair_label}</b> 🏁\n\n" \
+                  f"Result: <b>{outcome}</b>\n" \
+                  f"Direction: <b>{direction}</b>\n" \
+                  f"Entry Price: <code>{entry}</code>\n" \
+                  f"Exit Price: <code>{current_price}</code>\n\n" \
+                  f"📊 <b>Pair Stats:</b>\n" \
+                  f"Wins: {total_wins} | Losses: {total_losses}\n" \
+                  f"Current Win Rate: <code>{win_rate:.1f}%</code>"
+
+            try:
+                await context.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="HTML")
+            except Exception as e:
+                logging.error(f"Failed sending trade outcome: {e}")
+        else:
+            remaining_trades.append(trade)
+
+    trade_database[pair_id]['active_trades'] = remaining_trades
+    save_database()
+
+async def monitor_markets_job(context: ContextTypes.DEFAULT_TYPE):
+    status_str, is_open = get_market_status_wat()
+    if not is_open:
+        logging.info(f"Market Closed: {status_str}")
+        return
+
+    for pair_id, pair_label in MAJOR_PAIRS.items():
+        df = await get_5m_data(pair_id)
+        if df is None:
+            await asyncio.sleep(10) # 10s sleep to respect 8 calls/min limit
+            continue
+
+        last_row = df.iloc[-1]
+        current_price = round(float(last_row['Close']), 5 if "JPY" not in pair_id and "XAU" not in pair_id else 3)
+
+        await manage_active_trades(pair_id, pair_label, current_price, context)
+
+        signal = check_forest_signal(pair_id, df)
+
+        if signal:
+            tp, sl = calculate_targets(pair_id, signal['direction'], signal['price'])
+
+            msg = f"🚨 <b>{pair_label} Signal Alert</b> 🚨\n\n" \
+                  f"Direction: <b>{signal['direction']}</b>\n" \
+                  f"Execution Price: <code>{signal['price']}</code>\n" \
+                  f"RSI Value: <code>{signal['rsi']}</code>\n\n" \
+                  f"🎯 Target TP: <code>{tp}</code>\n" \
+                  f"🛡️ Target SL: <code>{sl}</code>" # FIXED: was missing </code> and parse_mode
+
+            trade_database[pair_id]['active_trades'].append({
+                "direction": signal['direction'],
+                "entry_price": signal['price'],
+                "tp": tp,
+                "sl": sl,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            })
+            save_database()
+
+            try:
+                await context.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="HTML")
+            except Exception as e:
+                logging.error(f"Failed sending alert telegram update: {e}")
+
+        await asyncio.sleep(10) # Important: 5 pairs * 10s = 50s. Stays under 8 calls/min
+
+async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    status_str, _ = get_market_status_wat()
+    stats_msg = f"<b>Market Status:</b> {status_str}\n\n📊 <b>Performance Leaderboard:</b>\n"
+    for pair_id, pair_label in MAJOR_PAIRS.items():
+        w = trade_database[pair_id].get('wins', 0)
+        l = trade_database[pair_id].get('losses', 0)
+        active_count = len(trade_database[pair_id].get('active_trades', []))
+        wr = (w / (w + l)) * 100 if (w + l) > 0 else 0
+        stats_msg += f"• {pair_label}: {w}W - {l}L ({wr:.1f}% WR) | [{active_count} Active]\n"
+
+    await update.message.reply_text(stats_msg, parse_mode="HTML")
+
 def main():
-    if not TOKEN:
-        raise ValueError("CRITICAL: BOT_TOKEN environment variable not set!")
-    
+    if not TOKEN or not CHAT_ID or not TD_KEY:
+        logging.error("Missing critical BOT_TOKEN, CHAT_ID or TWELVEDATA_KEY variables.")
+        return
+
     app = ApplicationBuilder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("signal", signal))
-    
-    # Run scan every 10 minutes, first run in 5 seconds
-    app.job_queue.run_repeating(run_background_job, interval=600, first=5)
-    
-    logging.info("Bot starting...")
+    app.add_handler(CommandHandler("status", status_command))
+
+    if app.job_queue:
+        app.job_queue.run_repeating(monitor_markets_job, interval=600, first=10) # 10min = safer for free tier
+        logging.info("Production Twelve Data tracking pipeline initialized on JobQueue.")
+    else:
+        logging.error("JobQueue initialization failed. Verification required.")
+        return
+
     app.run_polling()
 
 if __name__ == "__main__":
