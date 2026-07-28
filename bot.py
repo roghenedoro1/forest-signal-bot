@@ -284,13 +284,125 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(stats_msg, parse_mode="HTML")
 
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = (
+        "🤖 <b>FOREST AI Forex Signal Bot</b>\n\n"
+        "Welcome!\n\n"
+        "<b>Available Commands:</b>\n"
+        "📊 /status - Market status\n"
+        "📈 /signal - Scan for live signals\n"
+        "🏆 /stats - Trading statistics\n"
+        "❓ /help - Show commands\n\n"
+        "Signals are monitored automatically every 10 minutes."
+    )
+    await update.message.reply_text(msg, parse_mode="HTML")
+
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = (
+        "<b>Available Commands</b>\n\n"
+        "📊 /status - Market status & leaderboard\n"
+        "📈 /signal - Scan all pairs immediately\n"
+        "🏆 /stats - Performance statistics\n"
+        "❓ /help - Show this help message"
+    )
+    await update.message.reply_text(msg, parse_mode="HTML")
+
+
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    total_wins = 0
+    total_losses = 0
+    total_active = 0
+
+    text = "🏆 <b>Trading Statistics</b>\n\n"
+
+    for pair_id, pair_name in MAJOR_PAIRS.items():
+        wins = trade_database[pair_id]["wins"]
+        losses = trade_database[pair_id]["losses"]
+        active = len(trade_database[pair_id]["active_trades"])
+
+        total_wins += wins
+        total_losses += losses
+        total_active += active
+
+        wr = (wins/(wins+losses)*100) if (wins+losses) else 0
+
+        text += (
+            f"<b>{pair_name}</b>\n"
+            f"✅ Wins: {wins}\n"
+            f"❌ Losses: {losses}\n"
+            f"📈 Win Rate: {wr:.1f}%\n"
+            f"📌 Active Trades: {active}\n\n"
+        )
+
+    overall = (total_wins/(total_wins+total_losses)*100) if (total_wins+total_losses) else 0
+
+    text += (
+        "──────────────\n"
+        f"✅ Total Wins: {total_wins}\n"
+        f"❌ Total Losses: {total_losses}\n"
+        f"📊 Overall Win Rate: {overall:.1f}%\n"
+        f"📌 Active Trades: {total_active}"
+    )
+
+    await update.message.reply_text(text, parse_mode="HTML")
+
+
+async def signal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    status, market_open = get_market_status_wat()
+
+    if not market_open:
+        await update.message.reply_text(f"❌ Market Closed\n\n{status}")
+        return
+
+    found = False
+
+    for pair_id, pair_name in MAJOR_PAIRS.items():
+
+        df = await get_5m_data(pair_id)
+
+        if df is None:
+            continue
+
+        signal = check_forest_signal(pair_id, df)
+
+        if signal:
+
+            tp, sl = calculate_targets(
+                pair_id,
+                signal["direction"],
+                signal["price"]
+            )
+
+            msg = (
+                f"🚨 <b>{pair_name}</b>\n\n"
+                f"Direction: <b>{signal['direction']}</b>\n"
+                f"Entry: <code>{signal['price']}</code>\n"
+                f"TP: <code>{tp}</code>\n"
+                f"SL: <code>{sl}</code>\n"
+                f"RSI: <code>{signal['rsi']}</code>"
+            )
+
+            await update.message.reply_text(msg, parse_mode="HTML")
+            found = True
+
+    if not found:
+        await update.message.reply_text(
+            "✅ No valid FOREST AI signals found right now."
+        )
+
 def main():
     if not TOKEN or not CHAT_ID or not TD_KEY:
         logging.error("Missing critical BOT_TOKEN, CHAT_ID or TWELVEDATA_KEY variables.")
         return
 
     app = ApplicationBuilder().token(TOKEN).build()
-    app.add_handler(CommandHandler("status", status_command))
+    app.add_handler(CommandHandler("start", start_command))
+app.add_handler(CommandHandler("help", help_command))
+app.add_handler(CommandHandler("status", status_command))
+app.add_handler(CommandHandler("stats", stats_command))
+app.add_handler(CommandHandler("signal", signal_command))
 
     if app.job_queue:
         app.job_queue.run_repeating(monitor_markets_job, interval=600, first=10) # 10min = safer for free tier
