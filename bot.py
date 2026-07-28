@@ -398,17 +398,23 @@ def main():
         return
 
     app = ApplicationBuilder().token(TOKEN).build()
+
+    # Register commands
     app.add_handler(CommandHandler("start", start_command))
-app.add_handler(CommandHandler("help", help_command))
-app.add_handler(CommandHandler("status", status_command))
-app.add_handler(CommandHandler("stats", stats_command))
-app.add_handler(CommandHandler("signal", signal_command))
+    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("status", status_command))
+    app.add_handler(CommandHandler("stats", stats_command))
+    app.add_handler(CommandHandler("signal", signal_command))
 
     if app.job_queue:
-        app.job_queue.run_repeating(monitor_markets_job, interval=600, first=10) # 10min = safer for free tier
+        app.job_queue.run_repeating(
+            monitor_markets_job,
+            interval=600,
+            first=10
+        )
         logging.info("Production Twelve Data tracking pipeline initialized on JobQueue.")
     else:
-        logging.error("JobQueue initialization failed. Verification required.")
+        logging.error("JobQueue initialization failed.")
         return
 
     app.run_polling()
