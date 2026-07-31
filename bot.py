@@ -152,7 +152,12 @@ def check_forest_signal(pair_name, df):
         macd = ta.trend.MACD(close=df['Close'])
         macd_line = macd.macd()
         macd_signal = macd.macd_signal()
+        ema50 = ta.trend.EMAIndicator(close=df["Close"], window=50).ema_indicator()
+        ema200 = ta.trend.EMAIndicator(close=df["Close"], window=200).ema_indicator()
 
+        trend_up = ema50.iloc[-1] > ema200.iloc[-1]
+        trend_down = ema50.iloc[-1] < ema200.iloc[-1]
+        
         last_rsi = rsi.iloc[-1]
         last_macd_line = macd_line.iloc[-1]
         last_macd_signal = macd_signal.iloc[-1]
@@ -162,11 +167,11 @@ def check_forest_signal(pair_name, df):
 
         existing_dirs = [t['direction'] for t in trade_database[pair_name]['active_trades']]
 
-        if last_rsi < 30 and last_macd_line > last_macd_signal:
+        if trend_up and last_rsi < 30 and last_macd_line > last_macd_signal:
             if "BUY" not in existing_dirs:
                 return {"direction": "BUY", "price": price, "rsi": round(last_rsi, 2)}
 
-        elif last_rsi > 70 and last_macd_line < last_macd_signal:
+        elif trend_down and last_rsi < 70 and last_macd_line < last_macd_signal:
             if "SELL" not in existing_dirs:
                 return {"direction": "SELL", "price": price, "rsi": round(last_rsi, 2)}
 
