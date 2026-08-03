@@ -231,6 +231,33 @@ async def manage_active_trades(pair_id, pair_label, current_price, context):
 
     trade_database[pair_id]['active_trades'] = remaining_trades
     save_database()
+    async def trade_monitor_job(context: ContextTypes.DEFAULT_TYPE):
+
+    status_str, is_open = get_market_status_wat()
+
+    if not is_open:
+        return
+
+    for pair_id, pair_label in MAJOR_PAIRS.items():
+
+        df = await get_5m_data(pair_id)
+
+        if df is None:
+            continue
+
+        current_price = round(
+            float(df.iloc[-1]["Close"]),
+            5 if "JPY" not in pair_id and "XAU" not in pair_id else 3
+        )
+
+        await manage_active_trades(
+            pair_id,
+            pair_label,
+            current_price,
+            context
+        )
+
+        await asyncio.sleep(2)
 
 async def signal_scan_job(context: ContextTypes.DEFAULT_TYPE):
     status_str, is_open = get_market_status_wat()
