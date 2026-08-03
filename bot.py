@@ -233,8 +233,7 @@ async def manage_active_trades(pair_id, pair_label, current_price, context):
     save_database()
     
     async def trade_monitor_job(context: ContextTypes.DEFAULT_TYPE):
-
-    status_str, is_open = get_market_status_wat()
+        status_str, is_open = get_market_status_wat()
 
     if not is_open:
         return
