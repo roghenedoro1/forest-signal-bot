@@ -437,12 +437,17 @@ def main():
     app.add_handler(CommandHandler("stats", stats_command))
     app.add_handler(CommandHandler("signal", signal_command))
 
-    if app.job_queue:
-        app.job_queue.run_repeating(
-            monitor_markets_job,
-            interval=600,
-            first=10
-        )
+    app.job_queue.run_repeating(
+    monitor_markets_job,
+    interval=600,
+    first=10
+)
+
+app.job_queue.run_repeating(
+    trade_monitor_job,
+    interval=60,
+    first=20
+)
         logging.info("Production Twelve Data tracking pipeline initialized on JobQueue.")
     else:
         logging.error("JobQueue initialization failed.")
