@@ -231,6 +231,7 @@ async def manage_active_trades(pair_id, pair_label, current_price, context):
 
     trade_database[pair_id]['active_trades'] = remaining_trades
     save_database()
+    
     async def trade_monitor_job(context: ContextTypes.DEFAULT_TYPE):
 
     status_str, is_open = get_market_status_wat()
@@ -273,8 +274,6 @@ async def signal_scan_job(context: ContextTypes.DEFAULT_TYPE):
 
         last_row = df.iloc[-1]
         current_price = round(float(last_row['Close']), 5 if "JPY" not in pair_id and "XAU" not in pair_id else 3)
-
-        await manage_active_trades(pair_id, pair_label, current_price, context)
 
         signal = check_forest_signal(pair_id, df)
 
